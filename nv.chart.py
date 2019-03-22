@@ -66,7 +66,7 @@ update_every = 1
 priority = 60000
 retries = 10
 
-ORDER = ['load', 'memory', 'frequency', 'temperature', 'fan', 'ecc_errors']
+ORDER = ['utilization', 'memoryutilization', 'memory', 'pcie', 'temperature', 'fan', 'power', 'ecc_errors']
 
 CHARTS = {
 	'memory': {
@@ -74,8 +74,13 @@ CHARTS = {
 		'lines': [
 			# generated dynamically
 		]},
-	'load': {
-		'options': [None, 'Load', '%', 'Load', 'nv.load', 'line'],
+	'utilization': {
+		'options': [None, 'Utilization', '%', 'Utilization', 'nv.utilization', 'line'],
+		'lines': [
+			# generated dynamically
+		]},
+	'memoryutilization': {
+		'options': [None, 'Memory Utilization', '%', 'Memory Utilization', 'nv.memoryutilization', 'line'],
 		'lines': [
 			# generated dynamically
 		]},
@@ -94,8 +99,13 @@ CHARTS = {
 		'lines': [
 			# generated dynamically
 		]},
-	'frequency': {
-		'options': [None, 'Frequency', 'MHz', 'Frequency', 'nv.frequency', 'line'],
+	'pcie': {
+		'options': [None, 'PCI Express Bandwidth Utilization', 'KiB/s', 'PCIe Utilization', 'nv.pcie', 'area'],
+		'lines': [
+			# generated dynamically
+		]},
+	'power': {
+		'options': [None, 'Power Consumption', 'Watt', 'Power', 'nv.power', 'line'],
 		'lines': [
 			# generated dynamically
 		]}
@@ -168,22 +178,19 @@ class Service(SimpleService):
 			gpuIdx = str(i)
 			## Memory
 			if data['device_mem_used_'+str(i)] is not None:
-				self.definitions['memory']['lines'].append(['device_mem_used_' + gpuIdx, 'used [{0}]'.format(i), 'absolute', 1, 1024**2])
-				self.definitions['memory']['lines'].append(['device_mem_free_' + gpuIdx, 'free [{0}]'.format(i), 'absolute', 1, 1024**2])
+				self.definitions['memory']['lines'].append(['device_mem_used_' + gpuIdx, 'GPU:{0}'.format(i), 'absolute', 1, 1024**2])
+				# self.definitions['memory']['lines'].append(['device_mem_free_' + gpuIdx, 'free [{0}]'.format(i), 'absolute', 1, 1024**2])
 			# self.definitions['memory']['lines'].append(['device_mem_total_' + gpuIdx, 'GPU:{0} total'.format(i), 'absolute', -1, 1024**2])
 
-			## Load/usage
-			if data['device_load_gpu_' + gpuIdx] is not None:
-				self.definitions['load']['lines'].append(['device_load_gpu_' + gpuIdx, 'gpu [{0}]'.format(i), 'absolute'])
-				self.definitions['load']['lines'].append(['device_load_mem_' + gpuIdx, 'memory [{0}]'.format(i), 'absolute'])
+			## Utilization/usage
+			if data['device_util_gpu_' + gpuIdx] is not None:
+				self.definitions['utilization']['lines'].append(['device_util_gpu_' + gpuIdx, 'GPU:{0}'.format(i), 'absolute'])
+				self.definitions['memoryutilization']['lines'].append(['device_util_mem_' + gpuIdx, 'GPU:{0}'.format(i), 'absolute'])
 
-            ## Encoder Utilization
-			if data['device_load_enc_' + gpuIdx] is not None:
-				self.definitions['load']['lines'].append(['device_load_enc_' + gpuIdx, 'enc [{0}]'.format(i), 'absolute'])
-
-            ## Decoder Utilization
-			if data['device_load_dec_' + gpuIdx] is not None:
-				self.definitions['load']['lines'].append(['device_load_dec_' + gpuIdx, 'dec [{0}]'.format(i), 'absolute'])
+			## PCIE Bandwidth
+			if data['device_util_pcie_tx_' + gpuIdx] is not None:
+				self.definitions['pcie']['lines'].append(['device_util_pcie_tx_' + gpuIdx, 'tx [{0}]'.format(i), 'absolute', 1, 1])
+				self.definitions['pcie']['lines'].append(['device_util_pcie_rx_' + gpuIdx, 'rx [{0}]'.format(i), 'absolute', 1, -1])
 
 			## ECC errors
 			if data['device_ecc_errors_L1_CACHE_VOLATILE_CORRECTED_' + gpuIdx] is not None:
@@ -216,13 +223,9 @@ class Service(SimpleService):
 			if data['device_fanspeed_' + gpuIdx] is not None:
 				self.definitions['fan']['lines'].append(['device_fanspeed_' + gpuIdx, 'GPU:{0}'.format(i), 'absolute'])
 
-			## GPU and Memory frequency
-			if data['device_core_clock_' + gpuIdx] is not None:
-				self.definitions['frequency']['lines'].append(['device_core_clock_' + gpuIdx, 'core [{0}]'.format(i), 'absolute'])
-				self.definitions['frequency']['lines'].append(['device_mem_clock_' + gpuIdx, 'memory [{0}]'.format(i), 'absolute'])
-			## SM frequency, usually same as GPU - handled extra here because of legacy mode
-			if data['device_sm_clock_' + gpuIdx] is not None:
-				self.definitions['frequency']['lines'].append(['device_sm_clock_' + gpuIdx, 'sm [{0}]'.format(i), 'absolute'])
+			## Power
+			if data['device_power_' + gpuIdx] is not None:
+				self.definitions['power']['lines'].append(['device_power_' + gpuIdx, 'GPU:{0}'.format(i), 'absolute', 1, 1000])
 
 		## Check if GPU Units are installed and add charts
 		if self.unitCount:
@@ -298,6 +301,13 @@ class Service(SimpleService):
 					self.debug(str(e))
 					fanspeed = None
 
+				## Power
+				try:
+					power = pynvml.nvmlDeviceGetPowerUsage(handle)
+				except Exception as e:
+					self.debug(str(e))
+					power = None
+
 				## GPU and Memory Utilization
 				try:
 					util = pynvml.nvmlDeviceGetUtilizationRates(handle)
@@ -308,32 +318,14 @@ class Service(SimpleService):
 					gpu_util = None
 					mem_util = None
 
-				## Encoder Utilization
-				try:
-					encoder = pynvml.nvmlDeviceGetEncoderUtilization(handle)
-					enc_util = encoder[0]
+				## PCI Express Bandwidth Utilization
+				try: 
+					pcie_tx = pynvml.nvmlDeviceGetPcieThroughput(handle, pynvml.NVML_PCIE_UTIL_TX_BYTES)
+					pcie_rx = pynvml.nvmlDeviceGetPcieThroughput(handle, pynvml.NVML_PCIE_UTIL_RX_BYTES)
 				except Exception as e:
 					self.debug(str(e))
-					enc_util = None
-
-				## Decoder Utilization
-				try:
-					decoder = pynvml.nvmlDeviceGetDecoderUtilization(handle)
-					dec_util = decoder[0]
-				except Exception as e:
-					self.debug(str(e))
-					dec_util = None
-
-				## Clock frequencies
-				try:
-					clock_core = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_GRAPHICS)
-					clock_sm = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM)
-					clock_mem = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM) * self.nvMemFactor
-				except Exception as e:
-					self.debug(str(e))
-					clock_core = None
-					clock_sm = None
-					clock_mem = None
+					pcie_tx = None
+					pcie_rx = None
 
 				### Packing data ###
 				self.debug("Device", gpuIdx, ":", str(name))
@@ -353,29 +345,23 @@ class Service(SimpleService):
 				self.debug(str(name), "Mem free  :", str(mem.free), 'bytes')
 				data["device_mem_free_" + gpuIdx] = mem.free
 
-				self.debug(str(name), "Load GPU  :", str(gpu_util), '%')
-				data["device_load_gpu_" + gpuIdx] = gpu_util
+				self.debug(str(name), "Utilization GPU  :", str(gpu_util), '%')
+				data["device_util_gpu_" + gpuIdx] = gpu_util
 
-				self.debug(str(name), "Load MEM  :", str(mem_util), '%')
-				data["device_load_mem_" + gpuIdx] = mem_util
+				self.debug(str(name), "Utilization MEM  :", str(mem_util), '%')
+				data["device_util_mem_" + gpuIdx] = mem_util
 
-				self.debug(str(name), "Load ENC  :", str(enc_util), '%')
-				data["device_load_enc_" + gpuIdx] = enc_util
+				self.debug(str(name), "Utilization PCIE TX  :", str(pcie_tx), '%')
+				data["device_util_pcie_tx_" + gpuIdx] = pcie_tx
 
-				self.debug(str(name), "Load DEC  :", str(dec_util), '%')
-				data["device_load_dec_" + gpuIdx] = dec_util
-
-				self.debug(str(name), "Core clock:", str(clock_core), 'MHz')
-				data["device_core_clock_" + gpuIdx] = clock_core
-
-				self.debug(str(name), "SM clock  :", str(clock_sm), 'MHz')
-				data["device_sm_clock_" + gpuIdx] = clock_sm
-
-				self.debug(str(name), "Mem clock :", str(clock_mem), 'MHz')
-				data["device_mem_clock_" + gpuIdx] = clock_mem
+				self.debug(str(name), "Utilization PCIE RX  :", str(pcie_rx), '%')
+				data["device_util_pcie_rx_" + gpuIdx] = pcie_rx
 
 				self.debug(str(name), "Fan speed :", str(fanspeed), '%')
 				data["device_fanspeed_" + gpuIdx] = fanspeed
+
+				self.debug(str(name), "Power Usage :", str(power), 'Watt')
+				data["device_power_" + gpuIdx] = power
 
 				self.debug(str(name), "ECC errors:", str(eccErrors))
 				if eccErrors is not None:
@@ -507,33 +493,19 @@ class Service(SimpleService):
 						self.debug('Using legacy mem_used for GPU {0}: {1}'.format(gpuIdx, memUsed))
 					except Exception as e:
 						self.debug(str(e), "skipping device_mem_used_" + gpuIdx)
-				if data["device_load_gpu_" + gpuIdx] is None:
+				if data["device_util_gpu_" + gpuIdx] is None:
 					gpu_util = findall('(gpu:\d*).*?graphics=(\d*),.*?memory=(\d*)', output)[i][1]
 					try:
-						data["device_load_gpu_" + gpuIdx] = int(gpu_util)
+						data["device_util_gpu_" + gpuIdx] = int(gpu_util)
 						self.debug('Using legacy load_gpu for GPU {0}: {1}'.format(gpuIdx, gpu_util))
 					except Exception as e:
-						self.debug(str(e), "skipping device_load_gpu_" + gpuIdx)
-				if data["device_load_mem_" + gpuIdx] is None:
+						self.debug(str(e), "skipping device_util_gpu_" + gpuIdx)
+				if data["device_util_mem_" + gpuIdx] is None:
 					mem_util = findall('(gpu:\d*).*?graphics=(\d*),.*?memory=(\d*)', output)[i][2]
 					try:
-						data["device_load_mem_" + gpuIdx] = int(mem_util)
+						data["device_util_mem_" + gpuIdx] = int(mem_util)
 						self.debug('Using legacy load_mem for GPU {0}: {1}'.format(gpuIdx, mem_util))
 					except Exception as e:
-						self.debug(str(e), "skipping device_load_mem_" + gpuIdx)
-				if data["device_core_clock_" + gpuIdx] is None:
-					clock_core = findall('GPUCurrentClockFreqs.*?(gpu:\d*).*?(\d*),(\d*)', output)[i][1]
-					try:
-						data["device_core_clock_" + gpuIdx] = int(clock_core)
-						self.debug('Using legacy core_clock for GPU {0}: {1}'.format(gpuIdx, clock_core))
-					except Exception as e:
-						self.debug(str(e), "skipping device_core_clock_" + gpuIdx)
-				if data["device_mem_clock_" + gpuIdx] is None:
-					clock_mem = findall('GPUCurrentClockFreqs.*?(gpu:\d*).*?(\d*),(\d*)', output)[i][2]
-					try:
-						data["device_mem_clock_" + gpuIdx] = int(clock_mem)
-						self.debug('Using legacy mem_clock for GPU {0}: {1}'.format(gpuIdx, clock_mem))
-					except Exception as e:
-						self.debug(str(e), "skipping device_mem_clock_" + gpuIdx)
+						self.debug(str(e), "skipping device_util_mem_" + gpuIdx)
 
 		return data
