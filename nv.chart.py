@@ -331,7 +331,7 @@ class Service(SimpleService):
 				self.debug("Device", gpuIdx, ":", str(name))
 				data["device_name_" + gpuIdx] = name
 
-				self.debug("Brand:", str(brands[brand]))
+				self.debug("Brand:", str(brands[brand if brand < len(brands) else 0]))
 
 				self.debug(str(name), "Temp      :", str(temp))
 				data["device_temp_" + gpuIdx] = temp
